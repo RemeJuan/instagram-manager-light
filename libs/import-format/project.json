@@ -1,0 +1,5 @@
+{
+  "name": "import-format",
+  "sourceRoot": "libs/import-format/src",
+  "projectType": "library"
+}

@@ -1,0 +1,31 @@
+{
+  "name": "api",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/api/src",
+  "projectType": "application",
+  "targets": {
+    "build": {
+      "executor": "@nx/esbuild:esbuild",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "platform": "node",
+        "format": ["cjs"],
+        "bundle": true,
+        "main": "apps/api/src/main.ts",
+        "outputPath": "dist/apps/api",
+        "tsConfig": "apps/api/tsconfig.app.json",
+        "thirdParty": false
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx tsc -p apps/api/tsconfig.test.json && npx esbuild apps/api/src/app.integration.spec.ts --bundle --platform=node --format=cjs --packages=external --tsconfig=apps/api/tsconfig.app.json --outfile=dist/apps/api-tests/apps/api/src/app.integration.spec.js && node --test dist/apps/api-tests/apps/api/src/*.spec.js"
+      }
+    },
+    "serve": {
+      "executor": "@nx/js:node",
+      "options": { "buildTarget": "api:build", "watch": true }
+    }
+  }
+}

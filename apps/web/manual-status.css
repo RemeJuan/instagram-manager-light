@@ -1,0 +1,85 @@
+.manual-status-badge {
+  display: inline-block;
+  vertical-align: middle;
+  margin: 5px 0 0;
+  padding: 5px 8px;
+  border: 1px solid #d8e4dc;
+  border-radius: 5px;
+  color: #587467;
+  background: #f4f8f4;
+  font-size: 10px;
+  line-height: 1.2;
+  font-weight: 700;
+  white-space: normal;
+}
+.manual-status-badge.manual-status-deleted {
+  color: #916c58;
+  border-color: #ecded2;
+  background: #faf6f1;
+}
+.accounts-panel .manual-status-badge {
+  display: block;
+  width: max-content;
+  max-width: 170px;
+}
+.drawer-identity > .manual-status-badge {
+  display: table;
+  margin: 10px auto 0;
+}
+.manual-status-control {
+  border: 0;
+  border-top: 1px solid #eef0ec;
+  margin: 20px 0 0;
+  padding: 17px 0 0;
+  min-width: 0;
+}
+.manual-status-control legend {
+  float: left;
+  width: 100%;
+  color: #354a45;
+  font-size: 11px;
+  font-weight: 800;
+}
+.manual-status-control > p {
+  clear: both;
+  margin: 8px 0 15px;
+  color: #82918a;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.manual-status-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+.manual-status-options label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 8px;
+  min-height: 43px;
+  border: 1px solid #e5eae4;
+  border-radius: 7px;
+  font-size: 10px;
+  color: #52665c;
+  cursor: pointer;
+  line-height: 1.3;
+}
+.manual-status-options label:has(input:checked) {
+  background: #f0f6f0;
+  border-color: #a7c1ae;
+  color: #304f3d;
+}
+.manual-status-options input {
+  flex-shrink: 0;
+  margin: 0;
+  accent-color: #557a62;
+}
+@media (max-width: 400px) {
+  .manual-status-options {
+    grid-template-columns: 1fr;
+  }
+  .manual-status-options label {
+    min-height: 36px;
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@instagram-manager/contracts": ["libs/contracts/src/index.ts"],
+      "@instagram-manager/import-format": ["libs/import-format/src/index.ts"],
+      "@instagram-manager/relationship-core": [
+        "libs/relationship-core/src/index.ts"
+      ]
+    }
+  }
+}

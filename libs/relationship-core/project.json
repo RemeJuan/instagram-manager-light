@@ -1,0 +1,5 @@
+{
+  "name": "relationship-core",
+  "sourceRoot": "libs/relationship-core/src",
+  "projectType": "library"
+}

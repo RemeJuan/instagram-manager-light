@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "outDir": "../../dist/apps/api",
+    "rootDir": "../..",
+    "esModuleInterop": true,
+    "types": ["node", "multer"],
+    "strict": false
+  }
+}

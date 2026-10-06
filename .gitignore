@@ -1,0 +1,21 @@
+# Private Instagram exports and local state
+*.zip
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+data/
+uploads/
+logs/
+*.log
+*.jsonl
+
+# Tooling output
+node_modules/
+.next/
+.nx/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
