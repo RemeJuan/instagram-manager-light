@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 import { request as httpRequest } from "node:http";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
+import { LocalRequestGuardMiddleware } from "./local-request-guard.middleware";
+import { getHostedConfig } from "./hosted-config";
 
 describe("HTTP import integration", () => {
   let app: Awaited<ReturnType<typeof NestFactory.create>>;
@@ -21,6 +23,101 @@ describe("HTTP import integration", () => {
   after(async () => {
     await app.close();
     delete process.env.RELATIONSHIP_DB;
+  });
+
+  it("validates hosted settings before startup resources are created", () => {
+    assert.throws(() => getHostedConfig({ HOSTED: "true" }), /WEB_ORIGIN/);
+    for (const webOrigin of [
+      "http://example.com",
+      "https://example.com/",
+      "https://example.com/path",
+      "https://example.com?x=1",
+      "https://example.com#x",
+    ]) {
+      assert.throws(
+        () =>
+          getHostedConfig({
+            HOSTED: "true",
+            WEB_ORIGIN: webOrigin,
+            RELATIONSHIP_DB: "/tmp/relationships.sqlite",
+          }),
+        /WEB_ORIGIN/,
+      );
+    }
+    for (const databasePath of [undefined, ":memory:", "relative.sqlite"]) {
+      assert.throws(
+        () =>
+          getHostedConfig({
+            HOSTED: "true",
+            WEB_ORIGIN: "https://web.example",
+            RELATIONSHIP_DB: databasePath,
+          }),
+        /RELATIONSHIP_DB/,
+      );
+    }
+    assert.deepEqual(
+      getHostedConfig({
+        HOSTED: "true",
+        WEB_ORIGIN: "https://web.example",
+        RELATIONSHIP_DB: "/tmp/relationships.sqlite",
+        PORT: "8080",
+      }),
+      {
+        hosted: true,
+        webOrigin: "https://web.example",
+        databasePath: "/tmp/relationships.sqlite",
+        port: "8080",
+        bindAddress: "0.0.0.0",
+      },
+    );
+  });
+
+  it("allows hosted proxy Host/port and enforces configured mutation Origin", () => {
+    const middleware = new LocalRequestGuardMiddleware(
+      getHostedConfig({
+        HOSTED: "true",
+        WEB_ORIGIN: "https://web.example",
+        RELATIONSHIP_DB: "/tmp/relationships.sqlite",
+      }),
+    );
+    const run = (headers: Record<string, string>, method = "POST") => {
+      let status = 200;
+      let continued = false;
+      const req = {
+        socket: { localPort: 1234 },
+        method,
+        headers,
+      } as unknown as import("express").Request;
+      const res = {
+        status(code: number) {
+          status = code;
+          return this;
+        },
+        json() {
+          return this;
+        },
+      } as unknown as import("express").Response;
+      middleware.use(req, res, (() => {
+        continued = true;
+      }) as import("express").NextFunction);
+      return { status, continued };
+    };
+    assert.deepEqual(
+      run({ host: "api.onrender.com", origin: "https://web.example" }),
+      { status: 200, continued: true },
+    );
+    assert.deepEqual(
+      run({ host: "api.onrender.com:443", origin: "https://evil.example" }),
+      { status: 403, continued: false },
+    );
+    assert.deepEqual(
+      run({ host: "api.onrender.com", "sec-fetch-site": "cross-site" }),
+      { status: 403, continued: false },
+    );
+    assert.deepEqual(run({ host: "api.onrender.com" }), {
+      status: 200,
+      continued: true,
+    });
   });
 
   const fixture = async (name: string) =>
