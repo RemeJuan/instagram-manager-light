@@ -7,11 +7,14 @@ import Database from "better-sqlite3";
 import { createHash, randomUUID } from "crypto";
 import type { ParsedUpload } from "@instagram-manager/import-format";
 import { getHostedConfig } from "./hosted-config";
+import { migrateRelationshipDatabase } from "./relationship-migrations";
 
 type Side = "followers" | "following";
+
 @Injectable()
 export class RelationshipService {
   private db: Database.Database;
+
   constructor() {
     const path = getHostedConfig().databasePath;
     const fs = require("fs");
@@ -19,54 +22,52 @@ export class RelationshipService {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
-    this.db
-      .exec(`CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY, username_normalized TEXT NOT NULL UNIQUE, display_username TEXT NOT NULL, profile_url TEXT, created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS imports(id TEXT PRIMARY KEY, created_at TEXT NOT NULL, source_type TEXT NOT NULL, file_sha256 TEXT NOT NULL, status TEXT NOT NULL, warnings_json TEXT NOT NULL, identity TEXT NOT NULL UNIQUE);
-      CREATE TABLE IF NOT EXISTS import_sides(import_id TEXT NOT NULL REFERENCES imports(id), side TEXT NOT NULL, coverage TEXT NOT NULL, observed_count INTEGER NOT NULL, latest_source_timestamp INTEGER, files_json TEXT NOT NULL, PRIMARY KEY(import_id,side));
-       CREATE TABLE IF NOT EXISTS import_entries(import_id TEXT NOT NULL REFERENCES imports(id), side TEXT NOT NULL, account_id TEXT NOT NULL REFERENCES accounts(id), source_relationship_timestamp INTEGER CHECK(source_relationship_timestamp IS NULL OR source_relationship_timestamp >= 0), source_timestamp_kind TEXT, PRIMARY KEY(import_id,side,account_id));
-      CREATE TABLE IF NOT EXISTS relationships(account_id TEXT NOT NULL REFERENCES accounts(id), side TEXT NOT NULL, is_present INTEGER NOT NULL, first_observed_at TEXT, last_observed_at TEXT, absence_first_detected_at TEXT, source_relationship_timestamp INTEGER, source_timestamp_kind TEXT, last_complete_import_id TEXT, last_positive_import_id TEXT, PRIMARY KEY(account_id,side));
-      CREATE TABLE IF NOT EXISTS relationship_changes(id TEXT PRIMARY KEY, import_id TEXT NOT NULL, account_id TEXT NOT NULL, side TEXT NOT NULL, kind TEXT NOT NULL, detected_at TEXT NOT NULL, previous_complete_import_id TEXT, evidence_coverage TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS account_preferences(account_id TEXT PRIMARY KEY REFERENCES accounts(id), keep_following INTEGER NOT NULL DEFAULT 0, ignored INTEGER NOT NULL DEFAULT 0, manual_status TEXT, note TEXT, updated_at TEXT NOT NULL);`);
+    migrateRelationshipDatabase(this.db);
   }
+
   close() {
     this.db.close();
   }
 
-  proposedRemovals(side: Side, names: string[]) {
+  proposedRemovals(ownerId: string, side: Side, names: string[]) {
     return this.db
       .prepare(
-        "SELECT count(*) n FROM relationships r JOIN accounts a ON a.id=r.account_id WHERE r.side=? AND r.is_present=1 AND a.username_normalized NOT IN (SELECT value FROM json_each(?))",
+        `SELECT count(*) FROM relationships r
+         JOIN accounts a ON a.id=r.account_id
+         WHERE a.owner_id=? AND r.side=? AND r.is_present=1
+           AND a.username_normalized NOT IN (SELECT value FROM json_each(?))`,
       )
       .pluck()
-      .get(side, JSON.stringify(names)) as number;
+      .get(ownerId, side, JSON.stringify(names)) as number;
   }
 
   commit(
+    ownerId: string,
     preview: { parsed: ParsedUpload; hash: string },
     coverage: Partial<Record<Side, "complete" | "partial">>,
     opts: { idempotencyToken?: string; confirmHistoricalReplay?: boolean },
   ) {
-    const { parsed, hash } = preview,
-      sides = ["followers", "following"] as Side[];
+    const { parsed, hash } = preview;
+    const sides = ["followers", "following"] as Side[];
     const selectedCoverage = Object.fromEntries(
       sides
-        .filter((s) => parsed.sides[s])
-        .map((s) => [s, coverage[s] ?? "partial"]),
+        .filter((side) => parsed.sides[side])
+        .map((side) => [side, coverage[side] ?? "partial"]),
     );
     const canonicalContent = createHash("sha256")
       .update(
         JSON.stringify({
           sides: Object.fromEntries(
             sides
-              .filter((s) => parsed.sides[s])
-              .map((s) => [
-                s,
-                parsed.sides[s]!.entries.map((e) => [
-                  e.usernameNormalized,
-                  e.displayUsername,
-                  e.profileUrl,
-                  e.sourceTimestamp,
-                  e.sourceTimestampKind,
+              .filter((side) => parsed.sides[side])
+              .map((side) => [
+                side,
+                parsed.sides[side]!.entries.map((entry) => [
+                  entry.usernameNormalized,
+                  entry.displayUsername,
+                  entry.profileUrl,
+                  entry.sourceTimestamp,
+                  entry.sourceTimestampKind,
                 ]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
               ]),
           ),
@@ -80,17 +81,22 @@ export class RelationshipService {
       ? `token:${opts.idempotencyToken}`
       : identityHash;
     const prior = this.db
-      .prepare("SELECT id FROM imports WHERE identity=?")
+      .prepare("SELECT id FROM imports WHERE owner_id=? AND identity=?")
       .pluck()
-      .get(identity) as string | undefined;
+      .get(ownerId, identity) as string | undefined;
     if (prior) return { id: prior, idempotent: true };
+
     const now = new Date().toISOString();
     const importId = randomUUID();
     const tx = this.db.transaction(() => {
       this.db
-        .prepare("INSERT INTO imports VALUES(?,?,?,?,?,?,?)")
+        .prepare(
+          `INSERT INTO imports(id,owner_id,created_at,source_type,file_sha256,status,warnings_json,identity)
+           VALUES(?,?,?,?,?,?,?,?)`,
+        )
         .run(
           importId,
+          ownerId,
           now,
           "instagram_export",
           hash,
@@ -98,94 +104,84 @@ export class RelationshipService {
           JSON.stringify(parsed.warnings),
           identity,
         );
-      // Materialize the account union first. Complete absence baselines must see accounts
-      // first introduced by either side in this same import.
+
+      // Materialize this owner's account union before complete-side reconciliation.
       for (const side of sides) {
         const data = parsed.sides[side];
         if (!data) continue;
         for (const entry of data.entries) {
-          let id = this.db
-            .prepare("SELECT id FROM accounts WHERE username_normalized=?")
-            .pluck()
-            .get(entry.usernameNormalized) as string | undefined;
-          if (!id) {
-            id = randomUUID();
-            this.db
-              .prepare("INSERT INTO accounts VALUES(?,?,?,?,?)")
-              .run(
-                id,
-                entry.usernameNormalized,
-                entry.displayUsername,
-                entry.profileUrl,
-                now,
-              );
-          }
+          this.ensureAccount(ownerId, entry, now);
         }
       }
+
       for (const side of sides) {
         const data = parsed.sides[side];
         if (!data) continue;
         const cov = coverage[side] ?? "partial";
         const latest = Math.max(
           0,
-          ...data.entries.map((e) => e.sourceTimestamp ?? 0),
+          ...data.entries.map((entry) => entry.sourceTimestamp ?? 0),
         );
         const currentMax =
           (this.db
             .prepare(
-              "SELECT max(source_relationship_timestamp) FROM relationships WHERE side=? AND is_present=1",
+              `SELECT max(r.source_relationship_timestamp)
+               FROM relationships r JOIN accounts a ON a.id=r.account_id
+               WHERE a.owner_id=? AND r.side=? AND r.is_present=1`,
             )
             .pluck()
-            .get(side) as number) ?? 0;
+            .get(ownerId, side) as number | null) ?? 0;
         if (
           latest &&
           currentMax &&
           latest < currentMax &&
           !opts.confirmHistoricalReplay
-        )
+        ) {
           throw new ConflictException(
             "Older source data requires confirmHistoricalReplay",
           );
+        }
+
         this.db
-          .prepare("INSERT INTO import_sides VALUES(?,?,?,?,?,?)")
+          .prepare(
+            `INSERT INTO import_sides(import_id,owner_id,side,coverage,observed_count,latest_source_timestamp,files_json)
+             VALUES(?,?,?,?,?,?,?)`,
+          )
           .run(
             importId,
+            ownerId,
             side,
             cov,
             data.entries.length,
             latest || null,
             JSON.stringify(data.files),
           );
+
         const selectRel = this.db.prepare(
-          "SELECT * FROM relationships WHERE account_id=? AND side=?",
+          `SELECT * FROM relationships WHERE account_id=? AND side=?
+           AND EXISTS (SELECT 1 FROM accounts a WHERE a.id=relationships.account_id AND a.owner_id=?)`,
         );
         for (const entry of data.entries) {
-          let id = this.db
-            .prepare("SELECT id FROM accounts WHERE username_normalized=?")
-            .pluck()
-            .get(entry.usernameNormalized) as string | undefined;
-          if (!id) {
-            id = randomUUID();
-            this.db
-              .prepare("INSERT INTO accounts VALUES(?,?,?,?,?)")
-              .run(
-                id,
-                entry.usernameNormalized,
-                entry.displayUsername,
-                entry.profileUrl,
-                now,
-              );
-          }
+          const id = this.ensureAccount(ownerId, entry, now);
           this.db
-            .prepare("INSERT INTO import_entries VALUES(?,?,?,?,?)")
+            .prepare(
+              `INSERT INTO import_entries(import_id,side,account_id,owner_id,source_relationship_timestamp,source_timestamp_kind)
+               SELECT ?,?,?,?, ?,? WHERE EXISTS (SELECT 1 FROM imports WHERE id=? AND owner_id=? )
+                 AND EXISTS (SELECT 1 FROM accounts WHERE id=? AND owner_id=?)`,
+            )
             .run(
               importId,
               side,
               id,
+              ownerId,
               entry.sourceTimestamp,
               entry.sourceTimestampKind,
+              importId,
+              ownerId,
+              id,
+              ownerId,
             );
-          const old = selectRel.get(id, side) as
+          const old = selectRel.get(id, side, ownerId) as
             | { is_present: number; last_complete_import_id: string | null }
             | undefined;
           const kind = !old
@@ -195,10 +191,20 @@ export class RelationshipService {
               : "newly_present";
           this.db
             .prepare(
-              `INSERT INTO relationships(account_id,side,is_present,first_observed_at,last_observed_at,absence_first_detected_at,source_relationship_timestamp,source_timestamp_kind,last_complete_import_id,last_positive_import_id) VALUES(?,?,1,?,?,NULL,?,?,?,?) ON CONFLICT(account_id,side) DO UPDATE SET is_present=1,last_observed_at=excluded.last_observed_at,absence_first_detected_at=NULL,source_relationship_timestamp=excluded.source_relationship_timestamp,source_timestamp_kind=excluded.source_timestamp_kind,last_positive_import_id=excluded.last_positive_import_id,last_complete_import_id=CASE WHEN ?='complete' THEN excluded.last_complete_import_id ELSE relationships.last_complete_import_id END`,
+              `INSERT INTO relationships(account_id,owner_id,side,is_present,first_observed_at,last_observed_at,absence_first_detected_at,source_relationship_timestamp,source_timestamp_kind,last_complete_import_id,last_positive_import_id)
+               VALUES(?,?,?,1,?,?,NULL,?,?,?,?)
+               ON CONFLICT(account_id,side) DO UPDATE SET
+                 is_present=1,last_observed_at=excluded.last_observed_at,
+                 absence_first_detected_at=NULL,
+                 source_relationship_timestamp=excluded.source_relationship_timestamp,
+                 source_timestamp_kind=excluded.source_timestamp_kind,
+                 last_positive_import_id=excluded.last_positive_import_id,
+                 last_complete_import_id=CASE WHEN ?='complete' THEN excluded.last_complete_import_id ELSE relationships.last_complete_import_id END
+               WHERE EXISTS (SELECT 1 FROM accounts a WHERE a.id=relationships.account_id AND a.owner_id=?)`,
             )
             .run(
               id,
+              ownerId,
               side,
               now,
               now,
@@ -207,9 +213,11 @@ export class RelationshipService {
               cov === "complete" ? importId : null,
               importId,
               cov,
+              ownerId,
             );
-          if (kind)
+          if (kind) {
             this.change(
+              ownerId,
               importId,
               id,
               side,
@@ -218,18 +226,22 @@ export class RelationshipService {
               old?.last_complete_import_id ?? null,
               cov,
             );
+          }
         }
+
         if (cov === "complete") {
           const known = this.db
-            .prepare("SELECT id FROM accounts")
+            .prepare("SELECT id FROM accounts WHERE owner_id=?")
             .pluck()
-            .all() as string[];
+            .all(ownerId) as string[];
           for (const accountId of known) {
             const present = this.db
               .prepare(
-                "SELECT is_present,last_positive_import_id,last_complete_import_id FROM relationships WHERE account_id=? AND side=?",
+                `SELECT is_present,last_positive_import_id,last_complete_import_id
+                 FROM relationships WHERE account_id=? AND side=?
+                   AND EXISTS (SELECT 1 FROM accounts a WHERE a.id=relationships.account_id AND a.owner_id=?)`,
               )
-              .get(accountId, side) as
+              .get(accountId, side, ownerId) as
               | {
                   is_present: number;
                   last_positive_import_id: string | null;
@@ -239,23 +251,36 @@ export class RelationshipService {
             const included = Boolean(
               this.db
                 .prepare(
-                  "SELECT 1 FROM import_entries WHERE import_id=? AND side=? AND account_id=?",
+                  `SELECT 1 FROM import_entries e JOIN imports i ON i.id=e.import_id
+                   WHERE e.import_id=? AND e.side=? AND e.account_id=? AND i.owner_id=?`,
                 )
-                .get(importId, side, accountId),
+                .get(importId, side, accountId, ownerId),
             );
             if (!present) {
               this.db
                 .prepare(
-                  "INSERT INTO relationships(account_id,side,is_present,absence_first_detected_at,last_complete_import_id) VALUES(?,?,0,?,?)",
+                  `INSERT INTO relationships(account_id,owner_id,side,is_present,absence_first_detected_at,last_complete_import_id)
+                   SELECT ?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM accounts WHERE id=? AND owner_id=?)`,
                 )
-                .run(accountId, side, now, importId);
+                .run(
+                  accountId,
+                  ownerId,
+                  side,
+                  0,
+                  now,
+                  importId,
+                  accountId,
+                  ownerId,
+                );
             } else if (present.is_present && !included) {
               this.db
                 .prepare(
-                  "UPDATE relationships SET is_present=0,absence_first_detected_at=?,last_complete_import_id=? WHERE account_id=? AND side=?",
+                  `UPDATE relationships SET is_present=0,absence_first_detected_at=?,last_complete_import_id=?
+                   WHERE account_id=? AND side=? AND EXISTS (SELECT 1 FROM accounts a WHERE a.id=relationships.account_id AND a.owner_id=?)`,
                 )
-                .run(now, importId, accountId, side);
+                .run(now, importId, accountId, side, ownerId);
               this.change(
+                ownerId,
                 importId,
                 accountId,
                 side,
@@ -264,18 +289,14 @@ export class RelationshipService {
                 present.last_complete_import_id,
                 cov,
               );
-            } else if (included)
+            } else {
               this.db
                 .prepare(
-                  "UPDATE relationships SET last_complete_import_id=? WHERE account_id=? AND side=?",
+                  `UPDATE relationships SET last_complete_import_id=?
+                   WHERE account_id=? AND side=? AND EXISTS (SELECT 1 FROM accounts a WHERE a.id=relationships.account_id AND a.owner_id=?)`,
                 )
-                .run(importId, accountId, side);
-            else
-              this.db
-                .prepare(
-                  "UPDATE relationships SET last_complete_import_id=? WHERE account_id=? AND side=?",
-                )
-                .run(importId, accountId, side);
+                .run(importId, accountId, side, ownerId);
+            }
           }
         }
       }
@@ -283,79 +304,158 @@ export class RelationshipService {
     });
     return tx();
   }
+
+  private ensureAccount(
+    ownerId: string,
+    entry: ParsedUpload["sides"][Side]["entries"][number],
+    now: string,
+  ): string {
+    let id = this.db
+      .prepare(
+        "SELECT id FROM accounts WHERE owner_id=? AND username_normalized=?",
+      )
+      .pluck()
+      .get(ownerId, entry.usernameNormalized) as string | undefined;
+    if (!id) {
+      id = randomUUID();
+      this.db
+        .prepare(
+          `INSERT INTO accounts(id,owner_id,username_normalized,display_username,profile_url,created_at)
+           VALUES(?,?,?,?,?,?)`,
+        )
+        .run(
+          id,
+          ownerId,
+          entry.usernameNormalized,
+          entry.displayUsername,
+          entry.profileUrl,
+          now,
+        );
+    }
+    return id;
+  }
+
   private change(
-    i: string,
-    a: string,
-    s: string,
-    k: string,
-    n: string,
-    p: string | null,
-    c: string,
+    ownerId: string,
+    importId: string,
+    accountId: string,
+    side: string,
+    kind: string,
+    detectedAt: string,
+    previousCompleteImportId: string | null,
+    coverage: string,
   ) {
     this.db
-      .prepare("INSERT INTO relationship_changes VALUES(?,?,?,?,?,?,?,?)")
-      .run(randomUUID(), i, a, s, k, n, p, c);
+      .prepare(
+        `INSERT INTO relationship_changes(id,import_id,account_id,owner_id,side,kind,detected_at,previous_complete_import_id,evidence_coverage)
+         SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM imports WHERE id=? AND owner_id=?)
+           AND EXISTS (SELECT 1 FROM accounts WHERE id=? AND owner_id=?)`,
+      )
+      .run(
+        randomUUID(),
+        importId,
+        accountId,
+        ownerId,
+        side,
+        kind,
+        detectedAt,
+        previousCompleteImportId,
+        coverage,
+        importId,
+        ownerId,
+        accountId,
+        ownerId,
+      );
   }
-  imports() {
+
+  imports(ownerId: string) {
     return this.db
       .prepare(
-        `SELECT i.*, (SELECT json_group_array(json_object('side',s.side,'coverage',s.coverage,'observed_count',s.observed_count,'latest_source_timestamp',s.latest_source_timestamp,'files',json(s.files_json),'latest_complete_at',(SELECT max(ci.created_at) FROM import_sides cs JOIN imports ci ON ci.id=cs.import_id WHERE cs.side=s.side AND cs.coverage='complete'))) FROM import_sides s WHERE s.import_id=i.id) sides_json FROM imports i ORDER BY i.created_at DESC`,
+        `SELECT i.*, (
+           SELECT json_group_array(json_object(
+             'side',s.side,'coverage',s.coverage,'observed_count',s.observed_count,
+             'latest_source_timestamp',s.latest_source_timestamp,'files',json(s.files_json),
+             'latest_complete_at',(
+               SELECT max(ci.created_at) FROM import_sides cs
+               JOIN imports ci ON ci.id=cs.import_id
+               WHERE ci.owner_id=? AND cs.side=s.side AND cs.coverage='complete'
+             )
+           )) FROM import_sides s WHERE s.import_id=i.id
+         ) sides_json FROM imports i WHERE i.owner_id=? ORDER BY i.created_at DESC`,
       )
-      .all()
+      .all(ownerId, ownerId)
       .map((row) => {
         const item = row as Record<string, unknown>;
         return { ...item, sides: JSON.parse(String(item.sides_json ?? "[]")) };
       });
   }
-  importDetail(id: string) {
-    const row = this.db.prepare("SELECT * FROM imports WHERE id=?").get(id) as
-      | Record<string, unknown>
-      | undefined;
+
+  importDetail(ownerId: string, id: string) {
+    const row = this.db
+      .prepare("SELECT * FROM imports WHERE id=? AND owner_id=?")
+      .get(id, ownerId) as Record<string, unknown> | undefined;
     if (!row) throw new NotFoundException();
     return {
       ...row,
       sides: this.db
-        .prepare("SELECT * FROM import_sides WHERE import_id=?")
-        .all(id),
+        .prepare(
+          "SELECT s.* FROM import_sides s JOIN imports i ON i.id=s.import_id WHERE s.import_id=? AND i.owner_id=?",
+        )
+        .all(id, ownerId),
       entries: this.db
         .prepare(
-          "SELECT e.*,a.username_normalized,a.display_username FROM import_entries e JOIN accounts a ON a.id=e.account_id WHERE e.import_id=?",
+          `SELECT e.*,a.username_normalized,a.display_username FROM import_entries e
+           JOIN imports i ON i.id=e.import_id JOIN accounts a ON a.id=e.account_id
+           WHERE e.import_id=? AND i.owner_id=? AND a.owner_id=?`,
         )
-        .all(id),
+        .all(id, ownerId, ownerId),
     };
   }
-  changes() {
+
+  changes(ownerId: string) {
     return this.db
       .prepare(
-        "SELECT c.*,a.username_normalized,a.display_username FROM relationship_changes c JOIN accounts a ON a.id=c.account_id ORDER BY detected_at DESC",
+        `SELECT c.*,a.username_normalized,a.display_username FROM relationship_changes c
+         JOIN accounts a ON a.id=c.account_id JOIN imports i ON i.id=c.import_id
+         WHERE a.owner_id=? AND i.owner_id=? ORDER BY c.detected_at DESC`,
       )
-      .all();
+      .all(ownerId, ownerId);
   }
-  relationships(q: Record<string, string>) {
-    const page = Math.max(1, Number(q.page) || 1),
-      limit = 100,
-      search = `%${q.search ?? ""}%`;
-    let where = "1=1";
+
+  relationships(ownerId: string, q: Record<string, string>) {
+    const page = Math.max(1, Number(q.page) || 1);
+    const limit = 100;
+    const search = `%${q.search ?? ""}%`;
+    let where = "a.owner_id=?";
     if (q.includeDeleted !== "true")
       where += " AND coalesce(p.manual_status,'')!='deleted'";
     if (q.includeKeepFollowing !== "true")
       where += " AND coalesce(p.keep_following,0)=0";
     if (q.ignored !== "true") where += " AND coalesce(p.ignored,0)=0";
     if (q.manualStatus) where += " AND p.manual_status=?";
-    const base = ` FROM accounts a LEFT JOIN relationships r ON r.account_id=a.id LEFT JOIN account_preferences p ON p.account_id=a.id WHERE ${where} AND (a.username_normalized LIKE ? OR a.display_username LIKE ?) GROUP BY a.id`;
-    const params: (string | number)[] = [];
+    const base = ` FROM accounts a
+      LEFT JOIN relationships r ON r.account_id=a.id
+      LEFT JOIN account_preferences p ON p.account_id=a.id
+      WHERE ${where} AND (a.username_normalized LIKE ? OR a.display_username LIKE ?)
+      GROUP BY a.id`;
+    const params: (string | number)[] = [ownerId];
     if (q.manualStatus) params.push(q.manualStatus);
     params.push(search, search);
-    const view = q.view;
-    const havingFor = (f: string, g: string) =>
-      view === "mutual"
-        ? ` HAVING ${f}=1 AND ${g}=1`
-        : view === "not-following-back"
-          ? ` HAVING ${g}=1 AND followers_last_complete_import_id IS NOT NULL AND coalesce(${f},0)=0`
-          : view === "follower-only"
-            ? ` HAVING ${f}=1 AND following_last_complete_import_id IS NOT NULL AND coalesce(${g},0)=0`
+    const havingFor = (followers: string, following: string) =>
+      q.view === "mutual"
+        ? ` HAVING ${followers}=1 AND ${following}=1`
+        : q.view === "not-following-back"
+          ? ` HAVING ${following}=1 AND followers_last_complete_import_id IS NOT NULL AND coalesce(${followers},0)=0`
+          : q.view === "follower-only"
+            ? ` HAVING ${followers}=1 AND following_last_complete_import_id IS NOT NULL AND coalesce(${following},0)=0`
             : "";
-    const projection = `SELECT a.*,p.keep_following,p.ignored,p.manual_status,p.note,max(CASE WHEN r.side='followers' THEN r.is_present END) followers_present,max(CASE WHEN r.side='following' THEN r.is_present END) following_present,max(CASE WHEN r.side='followers' THEN r.last_observed_at END) followers_last_observed,max(CASE WHEN r.side='following' THEN r.last_observed_at END) following_last_observed,max(CASE WHEN r.side='followers' THEN r.last_complete_import_id END) followers_last_complete_import_id,max(CASE WHEN r.side='following' THEN r.last_complete_import_id END) following_last_complete_import_id`;
+    const projection = `SELECT a.*,p.keep_following,p.ignored,p.manual_status,p.note,
+      max(CASE WHEN r.side='followers' THEN r.is_present END) followers_present,
+      max(CASE WHEN r.side='following' THEN r.is_present END) following_present,
+      max(CASE WHEN r.side='followers' THEN r.last_observed_at END) followers_last_observed,
+      max(CASE WHEN r.side='following' THEN r.last_observed_at END) following_last_observed,
+      max(CASE WHEN r.side='followers' THEN r.last_complete_import_id END) followers_last_complete_import_id,
+      max(CASE WHEN r.side='following' THEN r.last_complete_import_id END) following_last_complete_import_id`;
     const sort =
       q.sort === "created_at" ? "a.created_at" : "a.username_normalized";
     const order = q.order === "desc" ? "DESC" : "ASC";
@@ -386,44 +486,61 @@ export class RelationshipService {
     return { page, pageSize: limit, total, items: rows };
   }
 
-  summary() {
+  summary(ownerId: string) {
     const count = this.db
-      .prepare("SELECT count(*) FROM accounts")
+      .prepare("SELECT count(*) FROM accounts WHERE owner_id=?")
       .pluck()
-      .get() as number;
+      .get(ownerId) as number;
     const category = (sql: string) =>
-      this.db.prepare(sql).pluck().get() as number;
+      this.db.prepare(sql).pluck().get(ownerId) as number;
     return {
       totalAccounts: count,
       notFollowingBack: category(
-        `SELECT count(*) FROM relationships f JOIN relationships r ON r.account_id=f.account_id AND r.side='followers' AND r.is_present=0 WHERE f.side='following' AND f.is_present=1 AND r.last_complete_import_id IS NOT NULL`,
+        `SELECT count(*) FROM relationships f
+         JOIN relationships r ON r.account_id=f.account_id AND r.side='followers' AND r.is_present=0
+         JOIN accounts a ON a.id=f.account_id
+         WHERE a.owner_id=? AND f.side='following' AND f.is_present=1 AND r.last_complete_import_id IS NOT NULL`,
       ),
       followerOnly: category(
-        `SELECT count(*) FROM relationships f JOIN relationships r ON r.account_id=f.account_id AND r.side='following' AND r.is_present=0 WHERE f.side='followers' AND f.is_present=1 AND r.last_complete_import_id IS NOT NULL`,
+        `SELECT count(*) FROM relationships f
+         JOIN relationships r ON r.account_id=f.account_id AND r.side='following' AND r.is_present=0
+         JOIN accounts a ON a.id=f.account_id
+         WHERE a.owner_id=? AND f.side='followers' AND f.is_present=1 AND r.last_complete_import_id IS NOT NULL`,
       ),
       mutual: category(
-        `SELECT count(*) FROM relationships f JOIN relationships r ON r.account_id=f.account_id AND r.side='followers' AND r.is_present=1 WHERE f.side='following' AND f.is_present=1`,
+        `SELECT count(*) FROM relationships f
+         JOIN relationships r ON r.account_id=f.account_id AND r.side='followers' AND r.is_present=1
+         JOIN accounts a ON a.id=f.account_id
+         WHERE a.owner_id=? AND f.side='following' AND f.is_present=1`,
       ),
       freshness: this.db
         .prepare(
-          `SELECT s.side,max(i.created_at) latestUpload,max(CASE WHEN s.coverage='complete' THEN i.created_at END) latestComplete FROM import_sides s JOIN imports i ON i.id=s.import_id GROUP BY s.side`,
+          `SELECT s.side,max(i.created_at) latestUpload,
+             max(CASE WHEN s.coverage='complete' THEN i.created_at END) latestComplete
+           FROM import_sides s JOIN imports i ON i.id=s.import_id
+           WHERE i.owner_id=? GROUP BY s.side`,
         )
-        .all(),
+        .all(ownerId),
     };
   }
-  account(id: string) {
+
+  account(ownerId: string, id: string) {
     const account = this.db
       .prepare(
-        "SELECT a.*,p.* FROM accounts a LEFT JOIN account_preferences p ON p.account_id=a.id WHERE a.id=?",
+        `SELECT a.*,p.* FROM accounts a LEFT JOIN account_preferences p ON p.account_id=a.id
+         WHERE a.id=? AND a.owner_id=?`,
       )
-      .get(id) as Record<string, unknown> | undefined;
+      .get(id, ownerId) as Record<string, unknown> | undefined;
     if (!account) throw new NotFoundException();
     const relations = this.db
-      .prepare("SELECT * FROM relationships WHERE account_id=?")
-      .all(id) as Array<Record<string, unknown>>;
+      .prepare(
+        `SELECT r.* FROM relationships r JOIN accounts a ON a.id=r.account_id
+         WHERE r.account_id=? AND a.owner_id=?`,
+      )
+      .all(id, ownerId) as Array<Record<string, unknown>>;
     const sides: Record<string, Record<string, unknown>> = {};
     for (const side of ["followers", "following"]) {
-      const row = relations.find((r) => r.side === side);
+      const row = relations.find((relation) => relation.side === side);
       sides[side] = {
         present: row ? Boolean(row.is_present) : null,
         is_present: row ? Boolean(row.is_present) : null,
@@ -441,19 +558,29 @@ export class RelationshipService {
       relationships: sides,
       timeline: this.db
         .prepare(
-          "SELECT c.* FROM relationship_changes c WHERE account_id=? ORDER BY detected_at DESC",
+          `SELECT c.* FROM relationship_changes c JOIN accounts a ON a.id=c.account_id
+           JOIN imports i ON i.id=c.import_id
+           WHERE c.account_id=? AND a.owner_id=? AND i.owner_id=? ORDER BY c.detected_at DESC`,
         )
-        .all(id),
+        .all(id, ownerId, ownerId),
     };
   }
-  preferences(id: string, b: Record<string, unknown>) {
-    if (!this.db.prepare("SELECT 1 FROM accounts WHERE id=?").get(id))
+
+  preferences(ownerId: string, id: string, body: Record<string, unknown>) {
+    if (
+      !this.db
+        .prepare("SELECT 1 FROM accounts WHERE id=? AND owner_id=?")
+        .get(id, ownerId)
+    ) {
       throw new NotFoundException();
+    }
     const existing = this.db
       .prepare(
-        "SELECT keep_following,ignored,manual_status,note FROM account_preferences WHERE account_id=?",
+        `SELECT p.keep_following,p.ignored,p.manual_status,p.note
+         FROM account_preferences p JOIN accounts a ON a.id=p.account_id
+         WHERE p.account_id=? AND a.owner_id=?`,
       )
-      .get(id) as
+      .get(id, ownerId) as
       | {
           keep_following: number;
           ignored: number;
@@ -464,22 +591,33 @@ export class RelationshipService {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO account_preferences(account_id,keep_following,ignored,manual_status,note,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET keep_following=excluded.keep_following,ignored=excluded.ignored,manual_status=excluded.manual_status,note=excluded.note,updated_at=excluded.updated_at`,
+        `INSERT INTO account_preferences(account_id,owner_id,keep_following,ignored,manual_status,note,updated_at)
+         SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM accounts WHERE id=? AND owner_id=?)
+         ON CONFLICT(account_id) DO UPDATE SET owner_id=excluded.owner_id,keep_following=excluded.keep_following,
+           ignored=excluded.ignored,manual_status=excluded.manual_status,note=excluded.note,
+           updated_at=excluded.updated_at`,
       )
       .run(
         id,
-        b.keepFollowing === undefined
+        ownerId,
+        body.keepFollowing === undefined
           ? (existing?.keep_following ?? 0)
-          : b.keepFollowing
+          : body.keepFollowing
             ? 1
             : 0,
-        b.ignored === undefined ? (existing?.ignored ?? 0) : b.ignored ? 1 : 0,
-        b.manualStatus === undefined
+        body.ignored === undefined
+          ? (existing?.ignored ?? 0)
+          : body.ignored
+            ? 1
+            : 0,
+        body.manualStatus === undefined
           ? (existing?.manual_status ?? null)
-          : b.manualStatus,
-        b.note === undefined ? (existing?.note ?? null) : b.note,
+          : body.manualStatus,
+        body.note === undefined ? (existing?.note ?? null) : body.note,
         now,
+        id,
+        ownerId,
       );
-    return this.account(id);
+    return this.account(ownerId, id);
   }
 }

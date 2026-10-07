@@ -20,7 +20,7 @@
     "test": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "npx tsc -p apps/api/tsconfig.test.json && npx esbuild apps/api/src/app.integration.spec.ts --bundle --platform=node --format=cjs --packages=external --tsconfig=apps/api/tsconfig.app.json --outfile=dist/apps/api-tests/apps/api/src/app.integration.spec.js && node --test dist/apps/api-tests/apps/api/src/*.spec.js"
+        "command": "npx esbuild apps/api/src/*.spec.ts --bundle --platform=node --format=cjs --packages=external --tsconfig=apps/api/tsconfig.app.json --outbase=apps/api/src --outdir=dist/apps/api-tests/apps/api/src && node --test dist/apps/api-tests/apps/api/src/*.spec.js"
       }
     },
     "serve": {

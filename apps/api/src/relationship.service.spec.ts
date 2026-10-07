@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { RelationshipService } from "./relationship.service";
+import { LOCAL_OWNER_ID } from "./relationship-migrations";
 import type { ParsedUpload } from "@instagram-manager/import-format";
 
 let service: RelationshipService;
@@ -46,87 +47,260 @@ beforeEach(() => {
 afterEach(() => service.close());
 
 describe("relationship reconciliation", () => {
+  it("isolates imports, accounts, reconciliation, reads, and preferences by owner", () => {
+    const otherOwner = "other-owner";
+    const localFirst = service.commit(
+      LOCAL_OWNER_ID,
+      upload([], ["same", "local-only"]),
+      { following: "complete" },
+      { idempotencyToken: "same-token" },
+    );
+    const otherFirst = service.commit(
+      otherOwner,
+      upload([], ["same", "other-only"]),
+      { following: "complete" },
+      { idempotencyToken: "same-token" },
+    );
+    assert.notEqual(localFirst.id, otherFirst.id);
+    assert.deepEqual(
+      service.commit(
+        otherOwner,
+        upload([], ["same", "other-only"]),
+        { following: "complete" },
+        { idempotencyToken: "same-token" },
+      ),
+      { id: otherFirst.id, idempotent: true },
+    );
+
+    const localRows = service.relationships(LOCAL_OWNER_ID, {
+      includeDeleted: "true",
+    }).items as Array<Record<string, unknown>>;
+    const otherRows = service.relationships(otherOwner, {
+      includeDeleted: "true",
+    }).items as Array<Record<string, unknown>>;
+    assert.deepEqual(localRows.map((row) => row.username_normalized).sort(), [
+      "local-only",
+      "same",
+    ]);
+    assert.deepEqual(otherRows.map((row) => row.username_normalized).sort(), [
+      "other-only",
+      "same",
+    ]);
+    assert.notEqual(
+      localRows.find((row) => row.username_normalized === "same")?.id,
+      otherRows.find((row) => row.username_normalized === "same")?.id,
+    );
+    assert.equal(service.summary(LOCAL_OWNER_ID).totalAccounts, 2);
+    assert.equal(service.summary(otherOwner).totalAccounts, 2);
+    assert.equal(service.imports(LOCAL_OWNER_ID).length, 1);
+    assert.equal(service.imports(otherOwner).length, 1);
+
+    const foreignLocalAccountId = String(
+      localRows.find((row) => row.username_normalized === "local-only")!.id,
+    );
+    const foreignLocalImportId = String(localFirst.id);
+    assert.throws(() => service.account(otherOwner, foreignLocalAccountId));
+    assert.throws(() => service.importDetail(otherOwner, foreignLocalImportId));
+    assert.throws(() =>
+      service.preferences(otherOwner, foreignLocalAccountId, {
+        note: "intrusion",
+      }),
+    );
+    assert.equal(
+      (
+        service.account(LOCAL_OWNER_ID, foreignLocalAccountId) as Record<
+          string,
+          unknown
+        >
+      ).note,
+      null,
+    );
+
+    service.commit(
+      otherOwner,
+      upload([], ["same"]),
+      { following: "complete" },
+      {},
+    );
+    assert.equal(
+      service.proposedRemovals(LOCAL_OWNER_ID, "following", ["same"]),
+      1,
+    );
+    assert.equal(
+      service.proposedRemovals(otherOwner, "following", ["same"]),
+      0,
+    );
+    assert.equal(
+      service
+        .changes(LOCAL_OWNER_ID)
+        .every((change: any) => change.account_id !== undefined),
+      true,
+    );
+    assert.equal(
+      (
+        service.importDetail(LOCAL_OWNER_ID, foreignLocalImportId) as Record<
+          string,
+          unknown
+        >
+      ).id,
+      foreignLocalImportId,
+    );
+
+    // A complete snapshot from one owner must not alter the other owner's rows.
+    service.commit(
+      otherOwner,
+      upload([], ["same"]),
+      { following: "complete" },
+      { idempotencyToken: "other-reconcile" },
+    );
+    assert.equal(
+      (
+        service.relationships(LOCAL_OWNER_ID, {
+          search: "local-only",
+          includeDeleted: "true",
+        }).items[0] as Record<string, unknown>
+      ).following_present,
+      true,
+    );
+    assert.equal(
+      (
+        service.relationships(otherOwner, {
+          search: "other-only",
+          includeDeleted: "true",
+        }).items[0] as Record<string, unknown>
+      ).following_present,
+      false,
+    );
+    assert.equal(service.summary(LOCAL_OWNER_ID).totalAccounts, 2);
+    assert.equal(service.summary(otherOwner).totalAccounts, 2);
+    assert.equal(
+      service
+        .changes(LOCAL_OWNER_ID)
+        .some((change: any) => change.account_id === foreignLocalAccountId),
+      true,
+    );
+    assert.equal(
+      service
+        .changes(otherOwner)
+        .some((change: any) => change.account_id === foreignLocalAccountId),
+      false,
+    );
+  });
+
   it("derives supplied synthetic aggregates with baseline certainty", () => {
     const following = names("f", 810);
     const followers = [...following.slice(0, 747), ...names("only", 36)];
     service.commit(
+      LOCAL_OWNER_ID,
       upload(followers, following),
       { followers: "complete", following: "complete" },
       {},
     );
     assert.equal(
       (
-        service.relationships({ search: "f809" }).items[0] as Record<
-          string,
-          unknown
-        >
+        service.relationships(LOCAL_OWNER_ID, { search: "f809" })
+          .items[0] as Record<string, unknown>
       ).followers_present,
       false,
     );
-    const result = service.summary();
+    const result = service.summary(LOCAL_OWNER_ID);
     assert.equal(result.notFollowingBack, 63);
     assert.equal(result.mutual, 747);
     assert.equal(result.followerOnly, 36);
-    const items = service.relationships({ view: "not-following-back" })
-      .items as unknown[];
+    const items = service.relationships(LOCAL_OWNER_ID, {
+      view: "not-following-back",
+    }).items as unknown[];
     assert.equal(items.length, 63);
     assert.equal(
-      service.relationships({ view: "follower-only" }).items.length,
+      service.relationships(LOCAL_OWNER_ID, { view: "follower-only" }).items
+        .length,
       36,
     );
-    assert.equal(service.relationships({ view: "mutual" }).items.length, 100); // default page size
-    assert.equal(service.relationships({}).total, 846);
+    assert.equal(
+      service.relationships(LOCAL_OWNER_ID, { view: "mutual" }).items.length,
+      100,
+    ); // default page size
+    assert.equal(service.relationships(LOCAL_OWNER_ID, {}).total, 846);
   });
   it("keeps category unknown until absent side has complete baseline", () => {
     service.commit(
+      LOCAL_OWNER_ID,
       upload(["alice"], ["alice", "bob"]),
       { following: "complete" },
       {},
     );
-    assert.equal(service.summary().notFollowingBack, 0);
+    assert.equal(service.summary(LOCAL_OWNER_ID).notFollowingBack, 0);
     assert.equal(
-      (service.relationships({ view: "not-following-back" }).items as unknown[])
-        .length,
+      (
+        service.relationships(LOCAL_OWNER_ID, { view: "not-following-back" })
+          .items as unknown[]
+      ).length,
       0,
     );
   });
   it("partial import never removes; complete import detects removals", () => {
-    service.commit(upload([], ["alice", "bob"]), { following: "complete" }, {});
-    service.commit(upload([], ["alice"]), { following: "partial" }, {});
+    service.commit(
+      LOCAL_OWNER_ID,
+      upload([], ["alice", "bob"]),
+      { following: "complete" },
+      {},
+    );
+    service.commit(
+      LOCAL_OWNER_ID,
+      upload([], ["alice"]),
+      { following: "partial" },
+      {},
+    );
     assert.equal(
-      service.changes().filter((c: any) => c.kind === "no_longer_present")
-        .length,
+      service
+        .changes(LOCAL_OWNER_ID)
+        .filter((c: any) => c.kind === "no_longer_present").length,
       0,
     );
-    service.commit(upload([], ["alice"]), { following: "complete" }, {});
+    service.commit(
+      LOCAL_OWNER_ID,
+      upload([], ["alice"]),
+      { following: "complete" },
+      {},
+    );
     assert.equal(
-      service.changes().filter((c: any) => c.kind === "no_longer_present")
-        .length,
+      service
+        .changes(LOCAL_OWNER_ID)
+        .filter((c: any) => c.kind === "no_longer_present").length,
       1,
     );
   });
   it("canonical repeated payload and coverage is idempotent", () => {
     const p = upload([], ["alice"]);
-    const first = service.commit(p, {}, {});
-    const second = service.commit(p, { following: "partial" }, {});
+    const first = service.commit(LOCAL_OWNER_ID, p, {}, {});
+    const second = service.commit(
+      LOCAL_OWNER_ID,
+      p,
+      { following: "partial" },
+      {},
+    );
     assert.deepEqual(second, { id: first.id, idempotent: true });
-    assert.equal(service.imports().length, 1);
+    assert.equal(service.imports(LOCAL_OWNER_ID).length, 1);
   });
   it("rolls back import, accounts, entries and changes on failed transaction", () => {
     const p = upload([], ["alice"]);
     // Invalid timestamp is rejected by SQLite after import/account/entry writes begin.
     p.parsed.sides.following!.entries[0].sourceTimestamp = -1;
-    assert.throws(() => service.commit(p, { following: "partial" }, {}));
-    assert.equal(service.imports().length, 0);
-    assert.equal(service.changes().length, 0);
+    assert.throws(() =>
+      service.commit(LOCAL_OWNER_ID, p, { following: "partial" }, {}),
+    );
+    assert.equal(service.imports(LOCAL_OWNER_ID).length, 0);
+    assert.equal(service.changes(LOCAL_OWNER_ID).length, 0);
   });
   it("single-side refresh leaves opposite relationship untouched", () => {
     service.commit(
+      LOCAL_OWNER_ID,
       upload(["alice"], ["alice"]),
       { followers: "complete", following: "complete" },
       {},
     );
     service.commit(
+      LOCAL_OWNER_ID,
       {
         parsed: {
           warnings: [],
@@ -144,69 +318,86 @@ describe("relationship reconciliation", () => {
       { following: "partial" },
       {},
     );
-    const alice = service.relationships({ search: "alice" }).items[0] as Record<
-      string,
-      unknown
-    >;
+    const alice = service.relationships(LOCAL_OWNER_ID, { search: "alice" })
+      .items[0] as Record<string, unknown>;
     assert.equal(alice.followers_present, true);
     assert.equal(alice.following_present, true);
   });
   it("reports unknown side state distinctly from complete absence", () => {
-    service.commit(upload([], ["alice"]), { following: "complete" }, {});
-    const alice = service.relationships({ search: "alice" }).items[0] as Record<
-      string,
-      unknown
-    >;
+    service.commit(
+      LOCAL_OWNER_ID,
+      upload([], ["alice"]),
+      { following: "complete" },
+      {},
+    );
+    const alice = service.relationships(LOCAL_OWNER_ID, { search: "alice" })
+      .items[0] as Record<string, unknown>;
     assert.equal(alice.followers_present, null);
     assert.equal(alice.followers_last_complete_import_id, null);
   });
   it("returns filtered result total for search and category pagination", () => {
     service.commit(
+      LOCAL_OWNER_ID,
       upload([], ["alice", "alicia", "bob"]),
       { followers: "complete", following: "complete" },
       {},
     );
-    assert.equal(service.relationships({ search: "ali" }).total, 2);
     assert.equal(
-      service.relationships({ view: "not-following-back" }).total,
+      service.relationships(LOCAL_OWNER_ID, { search: "ali" }).total,
+      2,
+    );
+    assert.equal(
+      service.relationships(LOCAL_OWNER_ID, { view: "not-following-back" })
+        .total,
       3,
     );
     assert.equal(
-      service.relationships({ view: "not-following-back", page: "2" }).total,
+      service.relationships(LOCAL_OWNER_ID, {
+        view: "not-following-back",
+        page: "2",
+      }).total,
       3,
     );
   });
   it("persists manual statuses and independent partial preferences across imports", () => {
-    service.commit(upload([], ["alice", "bob"]), { following: "complete" }, {});
+    service.commit(
+      LOCAL_OWNER_ID,
+      upload([], ["alice", "bob"]),
+      { following: "complete" },
+      {},
+    );
     const alice = (
-      service.relationships({ search: "alice" }).items[0] as Record<
-        string,
-        unknown
-      >
+      service.relationships(LOCAL_OWNER_ID, { search: "alice" })
+        .items[0] as Record<string, unknown>
     ).id as string;
     const bob = (
-      service.relationships({ search: "bob" }).items[0] as Record<
-        string,
-        unknown
-      >
+      service.relationships(LOCAL_OWNER_ID, { search: "bob" })
+        .items[0] as Record<string, unknown>
     ).id as string;
-    service.preferences(alice, {
+    service.preferences(LOCAL_OWNER_ID, alice, {
       keepFollowing: true,
       ignored: true,
       note: "keep",
     });
-    service.preferences(alice, { manualStatus: "deleted" });
-    service.preferences(bob, { manualStatus: "inactive" });
-    service.commit(upload([], ["bob"]), { following: "complete" }, {});
+    service.preferences(LOCAL_OWNER_ID, alice, { manualStatus: "deleted" });
+    service.preferences(LOCAL_OWNER_ID, bob, { manualStatus: "inactive" });
+    service.commit(
+      LOCAL_OWNER_ID,
+      upload([], ["bob"]),
+      { following: "complete" },
+      {},
+    );
     assert.equal(
-      (service.account(alice) as Record<string, unknown>).manual_status,
+      (service.account(LOCAL_OWNER_ID, alice) as Record<string, unknown>)
+        .manual_status,
       "deleted",
     );
     assert.equal(
-      (service.account(bob) as Record<string, unknown>).manual_status,
+      (service.account(LOCAL_OWNER_ID, bob) as Record<string, unknown>)
+        .manual_status,
       "inactive",
     );
-    const filtered = service.relationships({
+    const filtered = service.relationships(LOCAL_OWNER_ID, {
       manualStatus: "deleted",
       includeDeleted: "true",
       includeKeepFollowing: "true",
@@ -214,8 +405,11 @@ describe("relationship reconciliation", () => {
     }).items as Array<Record<string, unknown>>;
     assert.equal(filtered.length, 1);
     assert.equal(filtered[0].id, alice);
-    service.preferences(alice, { manualStatus: null });
-    const cleared = service.account(alice) as Record<string, unknown>;
+    service.preferences(LOCAL_OWNER_ID, alice, { manualStatus: null });
+    const cleared = service.account(LOCAL_OWNER_ID, alice) as Record<
+      string,
+      unknown
+    >;
     assert.equal(cleared.manual_status, null);
     assert.equal(cleared.keep_following, 1);
     assert.equal(cleared.ignored, 1);
@@ -223,23 +417,45 @@ describe("relationship reconciliation", () => {
   });
   it("excludes deleted accounts before filtering, counting, and pagination unless included", () => {
     const accounts = names("acct", 101);
-    service.commit(upload([], accounts), { following: "complete" }, {});
-    const deleted = service.relationships({ search: "acct100" })
+    service.commit(
+      LOCAL_OWNER_ID,
+      upload([], accounts),
+      { following: "complete" },
+      {},
+    );
+    const deleted = service.relationships(LOCAL_OWNER_ID, { search: "acct100" })
       .items[0] as Record<string, unknown>;
-    service.preferences(String(deleted.id), { manualStatus: "deleted" });
-    assert.equal(service.relationships({}).total, 100);
-    assert.equal(service.relationships({ page: "2" }).items.length, 0);
-    assert.equal(service.relationships({ search: "acct100" }).total, 0);
-    assert.equal(service.relationships({ manualStatus: "deleted" }).total, 0);
+    service.preferences(LOCAL_OWNER_ID, String(deleted.id), {
+      manualStatus: "deleted",
+    });
+    assert.equal(service.relationships(LOCAL_OWNER_ID, {}).total, 100);
     assert.equal(
-      service.relationships({ manualStatus: "deleted", includeDeleted: "true" })
-        .total,
+      service.relationships(LOCAL_OWNER_ID, { page: "2" }).items.length,
+      0,
+    );
+    assert.equal(
+      service.relationships(LOCAL_OWNER_ID, { search: "acct100" }).total,
+      0,
+    );
+    assert.equal(
+      service.relationships(LOCAL_OWNER_ID, { manualStatus: "deleted" }).total,
+      0,
+    );
+    assert.equal(
+      service.relationships(LOCAL_OWNER_ID, {
+        manualStatus: "deleted",
+        includeDeleted: "true",
+      }).total,
       1,
     );
-    assert.equal(service.relationships({ includeDeleted: "true" }).total, 101);
+    assert.equal(
+      service.relationships(LOCAL_OWNER_ID, { includeDeleted: "true" }).total,
+      101,
+    );
   });
   it("excludes keep-following accounts by default and combines inclusion flags", () => {
     service.commit(
+      LOCAL_OWNER_ID,
       upload([], ["alice", "bob", "carol"]),
       { following: "complete" },
       {},
@@ -248,32 +464,34 @@ describe("relationship reconciliation", () => {
       ["alice", "bob", "carol"].map((name) => [
         name,
         (
-          service.relationships({ search: name }).items[0] as Record<
-            string,
-            unknown
-          >
+          service.relationships(LOCAL_OWNER_ID, { search: name })
+            .items[0] as Record<string, unknown>
         ).id as string,
       ]),
     );
-    service.preferences(ids.alice, { keepFollowing: true });
-    service.preferences(ids.bob, {
+    service.preferences(LOCAL_OWNER_ID, ids.alice, { keepFollowing: true });
+    service.preferences(LOCAL_OWNER_ID, ids.bob, {
       keepFollowing: true,
       manualStatus: "deleted",
     });
-    assert.equal(service.relationships({}).total, 1);
+    assert.equal(service.relationships(LOCAL_OWNER_ID, {}).total, 1);
     assert.equal(
-      service.relationships({ includeKeepFollowing: "true" }).total,
+      service.relationships(LOCAL_OWNER_ID, { includeKeepFollowing: "true" })
+        .total,
       2,
     );
-    assert.equal(service.relationships({ includeDeleted: "true" }).total, 1);
     assert.equal(
-      service.relationships({
+      service.relationships(LOCAL_OWNER_ID, { includeDeleted: "true" }).total,
+      1,
+    );
+    assert.equal(
+      service.relationships(LOCAL_OWNER_ID, {
         includeDeleted: "true",
         includeKeepFollowing: "true",
       }).total,
       3,
     );
-    service.preferences(ids.alice, { keepFollowing: false });
-    assert.equal(service.relationships({}).total, 2);
+    service.preferences(LOCAL_OWNER_ID, ids.alice, { keepFollowing: false });
+    assert.equal(service.relationships(LOCAL_OWNER_ID, {}).total, 2);
   });
 });
