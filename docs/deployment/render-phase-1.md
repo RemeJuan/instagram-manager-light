@@ -6,6 +6,8 @@ Prove that the current Nx/Next.js/NestJS application runs reliably on Render, wi
 
 Out of scope: authentication, accounts, multi-tenancy, payments, PostgreSQL, and product features. Do not introduce a database abstraction or build a future multi-user architecture in this phase. Keep the existing `RELATIONSHIP_DB` path override so a future persistence change remains possible without adding speculative abstractions now.
 
+The next-phase proposal for hosted authentication, per-user data isolation, and a public landing page is documented separately in [Phase 2](auth-phase-2.md), with operator rollout gates in [Phase 2 operations](auth-phase-2-operations.md). This Phase 1 deployment remains unauthenticated; do not upload personal exports until Phase 2 is implemented and verified. The service values and procedures in this document are historical Phase 1 settings; use the Phase 2 operations override when preparing that later rollout.
+
 ## Deployment shape
 
 Deploy two Render **Node web services** from this repository:

@@ -27,7 +27,7 @@ Import previews accept supported Instagram-export JSON files or ZIP exports. For
 
 Instagram's option labels may vary. See [Meta's official export instructions](https://www.facebook.com/help/instagram/181231772500920) if you cannot find a setting. This app does not connect to Instagram. When you upload an export, its contents are sent to the configured API for processing; locally that API runs on your device. Do not upload private exports to an unauthenticated public deployment.
 
-For the optional hosted proof deployment, see [Render Phase 1 deployment plan](docs/deployment/render-phase-1.md). It exposes a shared, unauthenticated dataset; use synthetic or non-sensitive data only.
+For the hosted proof deployment, see [Render Phase 1 deployment plan](docs/deployment/render-phase-1.md). It exposes a shared, unauthenticated dataset; use synthetic or non-sensitive data only. The proposed invite-only hosted authentication and public landing page are documented in the [Phase 2 plan](docs/deployment/auth-phase-2.md); they are not implemented yet.
 
 ## Workspace
 
