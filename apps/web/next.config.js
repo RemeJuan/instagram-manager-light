@@ -1,3 +1,5 @@
+const { withNx } = require("@nx/next/plugins/with-nx");
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   transpilePackages: [
@@ -6,4 +8,4 @@ const nextConfig = {
     "@instagram-manager/relationship-core",
   ],
 };
-module.exports = nextConfig;
+module.exports = withNx(nextConfig);
