@@ -1,5 +1,16 @@
 // Keep response-shape assumptions here. The UI works with normalized records only.
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+export const hosted = process.env.NEXT_PUBLIC_HOSTED === "true";
+const BASE = hosted
+  ? "/api"
+  : process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
+    super(message);
+  }
+}
 type RecordValue = Record<string, unknown>;
 const obj = (v: unknown): RecordValue =>
   v && typeof v === "object" && !Array.isArray(v) ? (v as RecordValue) : {};
@@ -14,7 +25,10 @@ const field = (o: RecordValue, ...keys: string[]): unknown =>
 async function request(path: string, init?: RequestInit): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(`${BASE}${path}`, init);
+    response = await fetch(`${BASE}${path}`, {
+      ...init,
+      ...(hosted ? { credentials: "same-origin", cache: "no-store" } : {}),
+    });
   } catch {
     const localApi =
       /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(?:\/|$)/i.test(BASE);
@@ -26,15 +40,91 @@ async function request(path: string, init?: RequestInit): Promise<unknown> {
   }
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
+    if (hosted && response.status === 401 && !path.startsWith("/auth/"))
+      window.dispatchEvent(new Event("session-expired"));
     const error = obj(payload);
     const message = field(error, "message", "error");
-    throw new Error(
+    throw new ApiError(
       Array.isArray(message)
         ? message.join(" · ")
         : str(message) || `Request failed (${response.status}).`,
+      response.status,
     );
   }
   return payload;
+}
+
+export type SessionUser = {
+  id: string;
+  username: string;
+  role: "admin" | "user";
+};
+export async function getSession(): Promise<SessionUser> {
+  const response = obj(await request("/auth/me"));
+  const data = obj(response.user ?? response);
+  if (
+    !str(data.id) ||
+    !str(data.username) ||
+    !["admin", "user"].includes(str(data.role))
+  )
+    throw new Error("Could not verify your session. Try again.");
+  return data as SessionUser;
+}
+export async function login(username: string, password: string): Promise<void> {
+  await request("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+}
+export async function logout(): Promise<void> {
+  await request("/auth/logout", { method: "POST" });
+}
+export type Invitation = {
+  id: string;
+  createdAt: string;
+  expiresAt: string;
+  redeemedAt: string | null;
+};
+export async function getInvitations(): Promise<Invitation[]> {
+  const raw = await request("/auth/invitations");
+  return list(Array.isArray(raw) ? raw : obj(raw).items).map((entry) => {
+    const item = obj(entry);
+    return {
+      id: String(item.id ?? ""),
+      createdAt: str(item.createdAt),
+      expiresAt: str(item.expiresAt),
+      redeemedAt: str(item.redeemedAt) || null,
+    };
+  });
+}
+export async function createInvitation(
+  expiresInHours: number,
+): Promise<{ token: string }> {
+  const data = obj(
+    await request("/auth/invitations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expiresInHours }),
+    }),
+  );
+  const token = str(data.token);
+  if (!token)
+    throw new Error(
+      "Invitation created, but no link was returned. Try refreshing the list.",
+    );
+  return { token };
+}
+export async function redeemInvitation(
+  token: string,
+  username: string,
+  password: string,
+): Promise<void> {
+  await request("/auth/invitations/redeem", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, username, password }),
+  });
 }
 
 export type Side = "followers" | "following";

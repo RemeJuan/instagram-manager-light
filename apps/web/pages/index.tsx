@@ -1,4 +1,5 @@
 import Head from "next/head";
+import Link from "next/link";
 import { useRouter } from "next/router";
 import {
   useCallback,
@@ -31,6 +32,93 @@ import {
 } from "../components/ManualStatus";
 import { useAccountScroll } from "../lib/account-scroll";
 import { VisibilityFilter } from "../components/VisibilityFilter";
+import { hosted } from "../lib/auth";
+import { useHostedSession } from "../lib/session-context";
+
+export default function Index() {
+  return hosted ? <Landing /> : <Workspace />;
+}
+
+export function Landing() {
+  return (
+    <div className="public-shell">
+      <Head>
+        <title>Kinship — a clearer view of your connections</title>
+        <meta
+          name="description"
+          content="Make sense of your Instagram exports, one snapshot at a time."
+        />
+      </Head>
+      <header className="public-nav">
+        <Link className="public-brand" href="/">
+          <span className="brand-symbol">✳</span> kinship
+          <span className="brand-period">.</span>
+        </Link>
+        <Link className="public-nav-link" href="/login">
+          Log in <span>↗</span>
+        </Link>
+      </header>
+      <main className="public-main">
+        <section className="public-hero">
+          <div>
+            <span className="eyebrow">YOUR CONNECTIONS, IN CONTEXT</span>
+            <h1>
+              See the story
+              <br />
+              behind <em>your circle.</em>
+            </h1>
+            <p>
+              Import your Instagram export. Explore the accounts and changes it
+              reveals, without guessing what happened between snapshots.
+            </p>
+            <Link href="/login" className="primary-btn">
+              Go to your workspace <span>↗</span>
+            </Link>
+            <p className="public-caption">
+              Already invited? Use your invitation link to create an account.
+            </p>
+          </div>
+          <div className="public-art" aria-hidden="true">
+            <div className="art-orbit art-orbit-one" />
+            <div className="art-orbit art-orbit-two" />
+            <span className="art-core">✳</span>
+            <span className="art-point art-point-a">◎</span>
+            <span className="art-point art-point-b">↗</span>
+            <span className="art-point art-point-c">◷</span>
+            <span className="art-label">
+              A clearer picture
+              <br />
+              with every import.
+            </span>
+          </div>
+        </section>
+        <section className="public-features" aria-label="How it works">
+          <div>
+            <span>01 / BRING YOUR EXPORT</span>
+            <h2>Start with your data.</h2>
+            <p>
+              Upload a ZIP or supported JSON files from Instagram. No Instagram
+              password needed.
+            </p>
+          </div>
+          <div>
+            <span>02 / READ THE EVIDENCE</span>
+            <h2>Know what you know.</h2>
+            <p>Separate confirmed changes from gaps in incomplete snapshots.</p>
+          </div>
+          <div>
+            <span>03 / KEEP THE CONTEXT</span>
+            <h2>See change over time.</h2>
+            <p>Compare imports and keep your own notes on accounts.</p>
+          </div>
+        </section>
+      </main>
+      <footer className="public-footer">
+        Kinship · Built for a more thoughtful look at your connections.
+      </footer>
+    </div>
+  );
+}
 
 type Section = "overview" | "import" | "accounts" | "changes";
 const sections: { id: Section; label: string; icon: string }[] = [
@@ -148,8 +236,9 @@ function InlineError({ text, retry }: { text: string; retry?: () => void }) {
   );
 }
 
-export default function Home() {
+export function Workspace() {
   const router = useRouter();
+  const user = useHostedSession();
   const accountScroll = useAccountScroll();
   const section: Section =
     router.pathname === "/import"
@@ -205,7 +294,10 @@ export default function Home() {
           : new URLSearchParams(filter ? { view: filter } : {});
       const qs = params.toString();
       void router.push(`/accounts${qs ? `?${qs}` : ""}`);
-    } else void router.push(next === "overview" ? "/" : `/${next}`);
+    } else
+      void router.push(
+        next === "overview" ? (hosted ? "/dashboard" : "/") : `/${next}`,
+      );
   };
   const updateList = (values: Record<string, string>, replace = false) => {
     const params = listParams();
@@ -416,8 +508,8 @@ export default function Home() {
       const record = importFrom(result);
       setImportSuccess(
         record.id
-          ? `Import ${record.id} saved. Your local view is up to date.`
-          : "Import saved. Your local view is up to date.",
+          ? `Import ${record.id} saved. Your workspace is up to date.`
+          : "Import saved. Your workspace is up to date.",
       );
       setPreview(null);
       setFiles([]);
@@ -435,7 +527,7 @@ export default function Home() {
         <title>Kinship — Instagram relationship manager</title>
         <meta
           name="description"
-          content="A private, local-first view of your Instagram export relationships."
+          content="A clear view of your Instagram export relationships."
         />
       </Head>
       <div className="shell">
@@ -461,16 +553,40 @@ export default function Home() {
                 {section === s.id && <span className="nav-arrow">↗</span>}
               </button>
             ))}
+            {hosted && user?.role === "admin" && (
+              <Link className="nav-item" href="/admin/invitations">
+                <span className="nav-icon">✉</span> Invitations
+              </Link>
+            )}
           </nav>
           <div className="sidebar-bottom">
             <div className="privacy-icon">⌂</div>
             <strong>Made for your own space.</strong>
             <p>
-              Your data stays with your local setup. No Instagram login needed.
+              {hosted
+                ? "Your workspace is tied to your account. No Instagram login needed."
+                : "Your data stays with your local setup. No Instagram login needed."}
             </p>
             <span className="local-pill">
-              <span className="dot" /> LOCAL WORKSPACE
+              <span className="dot" />{" "}
+              {hosted ? "YOUR WORKSPACE" : "LOCAL WORKSPACE"}
             </span>
+            {hosted && (
+              <button
+                className="sidebar-logout"
+                type="button"
+                onClick={async () => {
+                  try {
+                    await import("../lib/api").then(({ logout }) => logout());
+                    window.location.assign("/login");
+                  } catch {
+                    window.alert("Could not log out. Try again.");
+                  }
+                }}
+              >
+                Log out ↗
+              </button>
+            )}
           </div>
         </aside>
         <div className="main-area">
