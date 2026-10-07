@@ -1,9 +1,14 @@
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
+import { getHostedConfig } from "./hosted-config";
 
 async function bootstrap() {
+  const config = getHostedConfig();
   const app = await NestFactory.create(AppModule);
-  app.enableCors({ origin: "http://localhost:3000" });
-  await app.listen(process.env.PORT ?? 3001, "127.0.0.1");
+  app.enableCors({ origin: config.webOrigin });
+  await app.listen(config.port, config.bindAddress);
 }
-bootstrap();
+bootstrap().catch((error: unknown) => {
+  console.error("API startup failed:", error);
+  process.exitCode = 1;
+});

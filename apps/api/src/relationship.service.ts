@@ -6,13 +6,14 @@ import {
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "crypto";
 import type { ParsedUpload } from "@instagram-manager/import-format";
+import { getHostedConfig } from "./hosted-config";
 
 type Side = "followers" | "following";
 @Injectable()
 export class RelationshipService {
   private db: Database.Database;
   constructor() {
-    const path = process.env.RELATIONSHIP_DB ?? "data/relationships.sqlite";
+    const path = getHostedConfig().databasePath;
     const fs = require("fs");
     fs.mkdirSync(require("path").dirname(path), { recursive: true });
     this.db = new Database(path);
