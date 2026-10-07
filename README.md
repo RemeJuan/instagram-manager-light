@@ -25,7 +25,9 @@ Import previews accept supported Instagram-export JSON files or ZIP exports. For
 3. Select **Followers and following** (or the closest matching category), **All time** if available, and **JSON** format.
 4. Start the export. When ready, download it and upload the ZIP or supported JSON files on the app's Import page.
 
-Instagram's option labels may vary. See [Meta's official export instructions](https://www.facebook.com/help/instagram/181231772500920) if you cannot find a setting. Your export stays on your device; this app does not connect to Instagram.
+Instagram's option labels may vary. See [Meta's official export instructions](https://www.facebook.com/help/instagram/181231772500920) if you cannot find a setting. This app does not connect to Instagram. When you upload an export, its contents are sent to the configured API for processing; locally that API runs on your device. Do not upload private exports to an unauthenticated public deployment.
+
+For the optional hosted proof deployment, see [Render Phase 1 deployment plan](docs/deployment/render-phase-1.md). It exposes a shared, unauthenticated dataset; use synthetic or non-sensitive data only.
 
 ## Workspace
 
