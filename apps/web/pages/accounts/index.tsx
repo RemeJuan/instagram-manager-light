@@ -1,1 +1,1 @@
-export { default } from "../index";
+export { Workspace as default } from "../index";
