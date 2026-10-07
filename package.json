@@ -8,7 +8,8 @@
     "build": "nx run-many -t build -p web api",
     "format": "prettier . --write",
     "format:check": "prettier . --check",
-    "test:api": "nx run api:test"
+    "test:api": "nx run api:test",
+    "bootstrap:admin": "esbuild apps/api/src/bootstrap-admin.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/apps/api/bootstrap-admin.cjs && node dist/apps/api/bootstrap-admin.cjs"
   },
   "devDependencies": {
     "@nestjs/common": "^10.4.15",
