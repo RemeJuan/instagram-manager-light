@@ -16,8 +16,12 @@ async function request(path: string, init?: RequestInit): Promise<unknown> {
   try {
     response = await fetch(`${BASE}${path}`, init);
   } catch {
+    const localApi =
+      /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(?:\/|$)/i.test(BASE);
     throw new Error(
-      "Cannot reach the local API. Start the API on localhost:3001 and try again.",
+      localApi
+        ? "Cannot reach the API. For local development, start the API on localhost:3001 and try again."
+        : "Cannot reach the API. Check your connection and API configuration, then try again.",
     );
   }
   const payload: unknown = await response.json().catch(() => null);

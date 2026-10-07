@@ -6,11 +6,24 @@
   "targets": {
     "build": {
       "executor": "@nx/next:build",
-      "options": { "outputPath": "dist/apps/web" }
+      "options": { "outputPath": "dist/apps/web" },
+      "configurations": {
+        "production": {}
+      },
+      "defaultConfiguration": "production"
     },
     "serve": {
       "executor": "@nx/next:server",
-      "options": { "buildTarget": "web:build", "dev": true, "port": 3000 }
+      "options": { "buildTarget": "web:build", "dev": true, "port": 3000 },
+      "configurations": {
+        "development": {
+          "buildTarget": "web:build",
+          "dev": true,
+          "port": 3000
+        },
+        "production": { "buildTarget": "web:build:production", "dev": false }
+      },
+      "defaultConfiguration": "development"
     }
   }
 }
