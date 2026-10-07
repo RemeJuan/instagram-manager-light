@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UploadedFiles,
   UseInterceptors,
 } from "@nestjs/common";
@@ -18,12 +19,19 @@ import {
   type ParsedUpload,
 } from "@instagram-manager/import-format";
 import { RelationshipService } from "./relationship.service";
+import type { Request } from "express";
+
+type PrincipalRequest = Request & { principal?: { id: string } };
+function owner(req: PrincipalRequest): string {
+  if (!req.principal?.id) throw new HttpException("Unauthorized", 401);
+  return req.principal.id;
+}
 
 @Controller()
 export class AppController {
   private previews = new Map<
     string,
-    { parsed: ParsedUpload; hash: string; created: number }
+    { parsed: ParsedUpload; hash: string; created: number; ownerId: string }
   >();
   constructor(
     @Inject(RelationshipService) private readonly service: RelationshipService,
@@ -35,7 +43,11 @@ export class AppController {
       limits: { fileSize: 25 * 1024 * 1024, files: 20 },
     }),
   )
-  async preview(@UploadedFiles() files: Array<Express.Multer.File> = []) {
+  async preview(
+    @Req() req: PrincipalRequest,
+    @UploadedFiles() files: Array<Express.Multer.File> = [],
+  ) {
+    const ownerId = owner(req);
     if (!files.length) throw new HttpException("Upload at least one file", 400);
     this.expire();
     try {
@@ -48,7 +60,6 @@ export class AppController {
       );
       const hash = createHash("sha256").update(canonical).digest("hex");
       const token = randomUUID();
-      this.previews.set(token, { parsed, hash, created: Date.now() });
       const sides: Record<string, unknown> = {};
       for (const side of ["followers", "following"] as const) {
         const value = parsed.sides[side];
@@ -59,17 +70,17 @@ export class AppController {
             duplicateCount: value.duplicateCount,
             files: value.files,
             proposedRemovals: this.service.proposedRemovals(
+              ownerId,
               side,
               value.entries.map((e) => e.usernameNormalized),
             ),
           };
       }
+      this.previews.set(token, { parsed, hash, created: Date.now(), ownerId });
       return { token, sides, warnings: parsed.warnings };
     } catch (e) {
-      throw new HttpException(
-        e instanceof Error ? e.message : "Invalid upload",
-        400,
-      );
+      if (e instanceof HttpException) throw e;
+      throw new HttpException("Invalid upload", 400);
     }
   }
 
@@ -82,7 +93,9 @@ export class AppController {
       idempotencyToken?: string;
       confirmHistoricalReplay?: boolean;
     },
+    @Req() req: PrincipalRequest,
   ) {
+    const ownerId = owner(req);
     if (
       !body ||
       typeof body.token !== "string" ||
@@ -93,7 +106,8 @@ export class AppController {
       throw new HttpException("Invalid commit request", 400);
     this.expire();
     const p = this.previews.get(body.token);
-    if (!p) throw new HttpException("Preview expired or unknown", 410);
+    if (!p || p.ownerId !== ownerId)
+      throw new HttpException("Preview expired or unknown", 410);
     const coverage = body.coverage ?? {};
     for (const [side, value] of Object.entries(coverage))
       if (
@@ -112,23 +126,29 @@ export class AppController {
           400,
         );
     }
-    const result = this.service.commit(p, coverage, body);
+    const result = this.service.commit(ownerId, p, coverage, body);
     this.previews.delete(body.token);
     return result;
   }
-  @Get("imports") imports() {
-    return this.service.imports();
+  @Get("imports") imports(@Req() req: PrincipalRequest) {
+    return this.service.imports(owner(req));
   }
-  @Get("imports/:id") importDetail(@Param("id") id: string) {
-    return this.service.importDetail(id);
+  @Get("imports/:id") importDetail(
+    @Req() req: PrincipalRequest,
+    @Param("id") id: string,
+  ) {
+    return this.service.importDetail(owner(req), id);
   }
-  @Get("changes") changes() {
-    return this.service.changes();
+  @Get("changes") changes(@Req() req: PrincipalRequest) {
+    return this.service.changes(owner(req));
   }
-  @Get("summary") summary() {
-    return this.service.summary();
+  @Get("summary") summary(@Req() req: PrincipalRequest) {
+    return this.service.summary(owner(req));
   }
-  @Get("relationships") relationships(@Query() q: Record<string, string>) {
+  @Get("relationships") relationships(
+    @Req() req: PrincipalRequest,
+    @Query() q: Record<string, string>,
+  ) {
     if (
       q.view &&
       !["mutual", "not-following-back", "follower-only", "all"].includes(q.view)
@@ -156,12 +176,16 @@ export class AppController {
       throw new HttpException("Search too long", 400);
     if (q.sort && !["username_normalized", "created_at"].includes(q.sort))
       throw new HttpException("Invalid sort field", 400);
-    return this.service.relationships(q);
+    return this.service.relationships(owner(req), q);
   }
-  @Get("accounts/:id") account(@Param("id") id: string) {
-    return this.service.account(id);
+  @Get("accounts/:id") account(
+    @Req() req: PrincipalRequest,
+    @Param("id") id: string,
+  ) {
+    return this.service.account(owner(req), id);
   }
   @Patch("accounts/:id/preferences") preferences(
+    @Req() req: PrincipalRequest,
     @Param("id") id: string,
     @Body() body: Record<string, unknown>,
   ) {
@@ -187,7 +211,7 @@ export class AppController {
       throw new HttpException("note must be a string", 400);
     if (typeof body.note === "string" && body.note.length > 2000)
       throw new HttpException("note is too long", 400);
-    return this.service.preferences(id, body);
+    return this.service.preferences(owner(req), id, body);
   }
   private expire() {
     for (const [k, v] of this.previews)

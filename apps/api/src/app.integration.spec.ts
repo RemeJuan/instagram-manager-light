@@ -74,6 +74,14 @@ describe("HTTP import integration", () => {
 
   it("allows hosted proxy Host/port and enforces configured mutation Origin", () => {
     const middleware = new LocalRequestGuardMiddleware(
+      {
+        localPrincipal: () => ({ id: "local", role: "admin" }),
+        authenticateSession: () => ({
+          id: "user-1",
+          username: "test",
+          role: "user",
+        }),
+      } as any,
       getHostedConfig({
         HOSTED: "true",
         WEB_ORIGIN: "https://web.example",
@@ -86,7 +94,11 @@ describe("HTTP import integration", () => {
       const req = {
         socket: { localPort: 1234 },
         method,
-        headers,
+        path: "/relationships",
+        headers: {
+          ...headers,
+          cookie: "relationship_session=" + "a".repeat(43),
+        },
       } as unknown as import("express").Request;
       const res = {
         status(code: number) {
@@ -115,8 +127,8 @@ describe("HTTP import integration", () => {
       { status: 403, continued: false },
     );
     assert.deepEqual(run({ host: "api.onrender.com" }), {
-      status: 200,
-      continued: true,
+      status: 403,
+      continued: false,
     });
   });
 
