@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "nx run-many -t serve -p web api --parallel",
+    "start:prod": "HOSTED=false NEXT_PUBLIC_HOSTED=false NEXT_PUBLIC_API_URL=http://localhost:3001 nx run-many -t build -p web api --configuration=production --skip-nx-cache && HOSTED=false NEXT_PUBLIC_HOSTED=false NEXT_PUBLIC_API_URL=http://localhost:3001 nx run-many -t serve -p web api --configuration=production --parallel --skip-nx-cache",
     "prebuild": "npm run format:check",
     "build": "nx run-many -t build -p web api",
     "format": "prettier . --write",

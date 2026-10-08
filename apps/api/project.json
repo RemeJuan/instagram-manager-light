@@ -25,7 +25,10 @@
     },
     "serve": {
       "executor": "@nx/js:node",
-      "options": { "buildTarget": "api:build", "watch": true }
+      "options": { "buildTarget": "api:build", "watch": true },
+      "configurations": {
+        "production": { "buildTarget": "api:build", "watch": false }
+      }
     }
   }
 }

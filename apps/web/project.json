@@ -21,7 +21,11 @@
           "dev": true,
           "port": 3000
         },
-        "production": { "buildTarget": "web:build:production", "dev": false }
+        "production": {
+          "buildTarget": "web:build:production",
+          "dev": false,
+          "port": 3000
+        }
       },
       "defaultConfiguration": "development"
     }
