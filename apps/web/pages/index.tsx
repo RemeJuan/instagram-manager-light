@@ -611,17 +611,24 @@ export function Workspace() {
                       <em>your circle.</em>
                     </h1>
                     <p>
-                      Understand what your exports show, without guessing what
-                      happened in between.
+                      Add your Instagram account data export to compare what
+                      followers and following snapshots show over time. No
+                      Instagram password needed.
                     </p>
                   </div>
-                  <button
-                    className="primary-btn intro-action"
-                    type="button"
-                    onClick={() => goTo("import")}
-                  >
-                    ↥ &nbsp; Import an export <span>↗</span>
-                  </button>
+                  <div className="intro-import">
+                    <button
+                      className="primary-btn intro-action"
+                      type="button"
+                      onClick={() => goTo("import")}
+                    >
+                      ↥ &nbsp; Import Instagram export <span>↗</span>
+                    </button>
+                    <p className="intro-import-hint">
+                      Instagram ZIP or supported followers/following JSON files.
+                      Review before saving.
+                    </p>
+                  </div>
                 </div>
                 <div className="section-heading">
                   <div>
@@ -754,7 +761,7 @@ export function Workspace() {
                     ) : (
                       <Empty
                         title="No changes detected yet"
-                        detail="Import a snapshot to begin tracking what changes between exports."
+                        detail="Add an Instagram export now and another later to see changes in your followers and following."
                       />
                     )}
                   </section>
@@ -1229,7 +1236,7 @@ export function Workspace() {
                   ) : (
                     <Empty
                       title="No accounts found"
-                      detail="Try another filter, or import an export to get started."
+                      detail="Try another filter, or add your Instagram export to get started."
                     />
                   )}
                 </div>
