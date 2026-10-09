@@ -2,7 +2,9 @@
 export const hosted = process.env.NEXT_PUBLIC_HOSTED === "true";
 const BASE = hosted
   ? "/api"
-  : process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+  : process.env.NEXT_PUBLIC_LOCAL_LAN === "true"
+    ? "/api"
+    : process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 export class ApiError extends Error {
   constructor(
     message: string,
