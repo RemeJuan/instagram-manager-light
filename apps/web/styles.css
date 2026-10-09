@@ -1165,11 +1165,18 @@ tr:last-child td {
   .shell {
     display: block;
   }
+  .main-area,
+  .content,
+  .panel,
+  .help-card {
+    min-width: 0;
+  }
   .sidebar {
     height: auto;
     width: 100%;
     position: relative;
-    padding: 16px;
+    padding: 16px max(16px, env(safe-area-inset-right)) 16px
+      max(16px, env(safe-area-inset-left));
     display: block;
   }
   .brand {
@@ -1189,10 +1196,13 @@ tr:last-child td {
   .sidebar nav {
     display: flex;
     gap: 4px;
-    overflow: auto;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
     margin-top: 15px;
   }
   .nav-item {
+    flex: 0 0 auto;
+    width: auto;
     white-space: nowrap;
     justify-content: center;
     padding: 10px;
@@ -1212,7 +1222,8 @@ tr:last-child td {
     padding: 0 5%;
   }
   .content {
-    padding: 30px 5% 60px;
+    padding: 30px max(5%, env(safe-area-inset-right))
+      max(60px, env(safe-area-inset-bottom)) max(5%, env(safe-area-inset-left));
   }
   .intro {
     min-height: auto;
@@ -1251,7 +1262,43 @@ tr:last-child td {
   }
   .two-col,
   .import-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .activity-row > div,
+  .change-row > div:nth-child(2),
+  .history-row > div,
+  .preview-side-head > *,
+  .file-list > div > span:nth-child(2) {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .row-heading,
+  .pagination,
+  .preview-side-head {
+    flex-wrap: wrap;
+  }
+  .pagination {
+    gap: 12px;
+  }
+  .change-row > div:nth-child(2) {
+    flex: 1 1 0;
+  }
+  .change-row {
+    flex-wrap: wrap;
+  }
+  .change-date {
+    flex: 1 0 calc(100% - 51px);
+    margin-left: 51px;
+    text-align: left;
+    white-space: normal;
+  }
+  .toolbar .select-wrap {
+    min-width: min(140px, 100%);
+  }
+  .table-scroll {
+    position: relative;
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
   }
   .page-heading {
     margin-top: 7px;
