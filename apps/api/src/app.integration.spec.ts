@@ -68,6 +68,7 @@ describe("HTTP import integration", () => {
         databasePath: "/tmp/relationships.sqlite",
         port: "8080",
         bindAddress: "0.0.0.0",
+        lanEnabled: false,
       },
     );
   });

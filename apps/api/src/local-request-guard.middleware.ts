@@ -37,12 +37,30 @@ export class LocalRequestGuardMiddleware implements NestMiddleware {
     const localPort = req.socket.localPort;
     const host = req.headers.host;
     if (!config.hosted) {
-      const [hostname, port, extra] = (host ?? "").toLowerCase().split(":");
+      const normalizedHost = (host ?? "").toLowerCase();
+      const directHost = [
+        `localhost:${localPort}`,
+        `127.0.0.1:${localPort}`,
+      ].includes(normalizedHost);
+      const remote = req.socket.remoteAddress ?? "";
+      const loopbackRemote =
+        remote === "::1" ||
+        remote === "127.0.0.1" ||
+        remote.startsWith("127.") ||
+        remote.startsWith("::ffff:127.");
+      const lanForwardedHost =
+        config.lanEnabled &&
+        !!config.lanIp &&
+        normalizedHost === `${config.lanIp}:3000` &&
+        loopbackRemote;
+      const forwardedLoopbackHost =
+        config.lanEnabled &&
+        normalizedHost === "127.0.0.1:3000" &&
+        loopbackRemote;
       if (
         !host ||
-        extra !== undefined ||
-        !["localhost", "127.0.0.1"].includes(hostname) ||
-        port !== String(localPort)
+        /[\s/@?#]/.test(host) ||
+        (!directHost && !lanForwardedHost && !forwardedLoopbackHost)
       ) {
         res.status(403).json({ statusCode: 403, message: "Forbidden" });
         return;
@@ -59,13 +77,19 @@ export class LocalRequestGuardMiddleware implements NestMiddleware {
       res.status(403).json({ statusCode: 403, message: "Forbidden" });
       return;
     }
+    const origin = req.headers.origin;
+    if (!config.hosted && origin !== undefined) {
+      const allowedOrigins = Array.isArray(config.webOrigin)
+        ? config.webOrigin
+        : [config.webOrigin];
+      if (!allowedOrigins.includes(origin)) {
+        res.status(403).json({ statusCode: 403, message: "Forbidden" });
+        return;
+      }
+    }
     if (unsafe && !config.hosted) {
-      const origin = req.headers.origin;
       if (origin !== undefined) {
-        if (origin !== config.webOrigin) {
-          res.status(403).json({ statusCode: 403, message: "Forbidden" });
-          return;
-        }
+        // Origin allowlist checked above.
       } else if (
         ["sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest"].some(
           (name) => req.headers[name] !== undefined,
