@@ -14,7 +14,18 @@ npm install
 npm run dev
 ```
 
-The command serves the Next.js app at `http://localhost:3000` and API at `http://127.0.0.1:3001`. API binds to loopback only. SQLite database defaults to `data/relationships.sqlite` (ignored by git); set `RELATIONSHIP_DB` to override its path. Use `npm run build` to build both applications for production. Start the production API with `node dist/apps/api/main.js` from workspace root.
+`npm run dev` serves the local, authentication-free workspace at `http://localhost:3000`; the API binds to loopback at `http://127.0.0.1:3001`. For a local production-mode run, use `npm run start:release`. It rebuilds both apps in local mode, starts the API from `dist/apps/api/main.cjs`, waits for its health check, then serves the web app at port 3000. This local command requires no account or login. `npm run start:prod` remains an alias for `npm run start:release`. Both local commands use the SQLite path in `RELATIONSHIP_DB` when set, or default to `data/relationships.sqlite` (ignored by git); set `RELATIONSHIP_DB` to override the path. Use `npm run build` to build both applications without starting them.
+
+For optional access from a trusted local network, supply this machine's RFC1918 IPv4 address explicitly:
+
+```sh
+LOCAL_LAN_IP=192.168.68.120 npm run dev:lan
+LOCAL_LAN_IP=192.168.68.120 npm run start:lan:release
+```
+
+Then open `http://192.168.68.120:3000` on the other device, replacing the example address with this machine's current LAN IP. LAN mode binds the web server to all interfaces; API stays bound to loopback and web proxies API requests locally. This unauthenticated app may expose private exports and relationship data to devices on the LAN. Use only on a trusted network; do not configure internet port forwarding. Default `dev` and `start:release` remain local-only.
+
+Hosted deployment uses separate hosted settings and build configuration. The API requires `HOSTED=true`, an exact `WEB_ORIGIN`, and an absolute `RELATIONSHIP_DB`; the hosted web build requires `NEXT_PUBLIC_HOSTED=true` and `API_UPSTREAM_URL`. Do not use the local release command to start a hosted deployment. See the [Render Phase 1 deployment plan](docs/deployment/render-phase-1.md) for deployment configuration.
 
 Import previews accept supported Instagram-export JSON files or ZIP exports. For deterministic, synthetic-only JSON test data, run `node fixtures/generate.mjs`; generated files are written under `fixtures/instagram-export/`. Do not use private exports as fixtures.
 
@@ -27,7 +38,7 @@ Import previews accept supported Instagram-export JSON files or ZIP exports. For
 
 Instagram's option labels may vary. See [Meta's official export instructions](https://www.facebook.com/help/instagram/181231772500920) if you cannot find a setting. This app does not connect to Instagram. When you upload an export, its contents are sent to the configured API for processing; locally that API runs on your device. Do not upload private exports to an unauthenticated public deployment.
 
-For the hosted proof deployment, see [Render Phase 1 deployment plan](docs/deployment/render-phase-1.md). It exposes a shared, unauthenticated dataset; use synthetic or non-sensitive data only. The proposed invite-only hosted authentication and public landing page are documented in the [Phase 2 plan](docs/deployment/auth-phase-2.md); they are not implemented yet.
+For hosted account and authentication operations, see the [authentication operations guide](docs/deployment/auth-phase-2-operations.md).
 
 ## Workspace
 
